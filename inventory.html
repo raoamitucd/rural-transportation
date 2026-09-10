@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Inventory - Segment Evidence Network</title>
+    
+    <!-- WebAssembly SQLite Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <!-- PapaParse for Google Sheet CSV enrichment -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <!-- Vis-Network for 2D Node-Connection Graph -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            margin: 0; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f6f8fa; 
+            color: #1f2328; 
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header { 
+            padding: 12px 24px; 
+            background: #ffffff;
+            border-bottom: 1px solid #d0d7de; 
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+        h1 { margin: 0 0 2px 0; font-size: 18px; font-weight: 600; }
+        p { margin: 0; color: #636c76; font-size: 12px; }
+        
+        nav { display: flex; gap: 10px; }
+        .nav-btn {
+            text-decoration: none;
+            background: #0d1117;
+            color: #58a6ff;
+            border: 1px solid #30363d;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 12px;
+            transition: background 0.2s;
+        }
+        .nav-btn:hover { background: #161b22; color: #79c0ff; }
+        .nav-btn.active { background: #1f6feb; color: #ffffff; border-color: #1f6feb; }
+
+        /* Main Workspace */
+        #workspace {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - 61px);
+            position: relative;
+        }
+
+        /* Search Floating Container */
+        .search-bar-container {
+            position: absolute;
+            top: 16px;
+            left: 20px;
+            z-index: 50;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            border: 1px solid #d0d7de;
+            border-radius: 8px;
+            padding: 12px 16px;
+            width: 440px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .search-input-wrapper {
+            position: relative;
+            width: 100%;
+        }
+        .search-input {
+            width: 100%;
+            padding: 8px 32px 8px 34px;
+            font-size: 13px;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .search-input:focus {
+            border-color: #0969da;
+            box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+        }
+        .search-icon {
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #636c76;
+            font-size: 13px;
+        }
+        .clear-btn {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #636c76;
+            cursor: pointer;
+            font-size: 14px;
+            display: none;
+        }
+        .clear-btn:hover { color: #cf222e; }
+
+        /* Autocomplete Suggestions Popup */
+        .suggestions-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            background: #ffffff;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            max-height: 260px;
+            overflow-y: auto;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+            z-index: 1000;
+            display: none;
+        }
+        .suggestion-item {
+            padding: 8px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f6f8fa;
+        }
+        .suggestion-item:hover {
+            background-color: #f0f6ff;
+            color: #0969da;
+        }
+        .suggestion-tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .tag-entity { background: #ddf4ff; color: #0969da; }
+        .tag-paper { background: #fff8c5; color: #9a6700; }
+
+        .stats-badge {
+            font-size: 11px;
+            font-weight: 600;
+            color: #57606a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Graph Canvas */
+        #network-container {
+            flex: 1;
+            height: 100%;
+            background: #ffffff;
+        }
+
+        /* Segment Evidence Inspector Sidebar */
+        #evidenceSidebar {
+            width: 420px;
+            background: #ffffff;
+            border-left: 1px solid #d0d7de;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: -2px 0 8px rgba(0,0,0,0.04);
+            z-index: 5;
+        }
+        .sidebar-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #0969da;
+            margin: 0;
+        }
+        .sidebar-section {
+            background: #f6f8fa;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            padding: 12px 14px;
+            font-size: 12px;
+        }
+        .sidebar-section h4 {
+            margin: 0 0 6px 0;
+            font-size: 12px;
+            color: #57606a;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #ddf4ff;
+            color: #0969da;
+            border: 1px solid #54aeff;
+            margin-right: 4px;
+        }
+        .relation-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #fff8c5;
+            color: #9a6700;
+            border: 1px solid #d4a72c;
+        }
+        .meta-tag {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            background: #eaeef2;
+            color: #57606a;
+            margin-right: 4px;
+        }
+        .evidence-quote {
+            background: #ffffff;
+            border-left: 3px solid #1f6feb;
+            padding: 10px 12px;
+            margin-top: 8px;
+            font-size: 12px;
+            line-height: 1.5;
+            color: #24292f;
+            border-radius: 0 4px 4px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+        }
+
+        .reset-btn {
+            background: #f6f8fa;
+            border: 1px solid #d0d7de;
+            color: #24292f;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .reset-btn:hover { background: #eaeef2; color: #0969da; }
+
+        /* Loading Overlay */
+        #loadingOverlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 101;
+            background: #ffffff;
+            padding: 20px 30px;
+            border-radius: 8px;
+            border: 1px solid #d0d7de;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+            text-align: center;
+            font-weight: 600;
+            color: #0969da;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div>
+        <h1>Database Inventory</h1>
+        <p>Interactive graph linking entities, relations, and segment-level paper evidence</p>
+    </div>
+    <nav>
+        <a href="index.html" class="nav-btn">🗺️ Geospatial Map</a>
+        <a href="inventory.html" class="nav-btn active">📋 Database Inventory</a>
+    </nav>
+</header>
+
+<div id="workspace">
+    
+    <!-- Floating Search & Autocomplete Panel -->
+    <div class="search-bar-container">
+        <div class="search-input-wrapper">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" class="search-input" placeholder="Search Papers/entities ....." oninput="handleSearchInput()" autocomplete="off">
+            <span id="clearBtn" class="clear-btn" onclick="resetIsolation()">✖</span>
+            
+            <!-- Popup Suggestions Dropdown -->
+            <div id="suggestionsDropdown" class="suggestions-dropdown"></div>
+        </div>
+        <div class="stats-badge">
+            <span id="nodesCount">0 Nodes</span>
+            <span id="edgesCount">0 Connections</span>
+            <button id="resetViewBtn" class="reset-btn" onclick="resetIsolation()" style="display:none;">Show All</button>
+        </div>
+    </div>
+
+    <div id="loadingOverlay">Initializing WebAssembly SQLite & Querying Segment Summaries...</div>
+
+    <!-- Vis Network Canvas Container -->
+    <div id="network-container"></div>
+
+    <!-- Segment Evidence Inspector Sidebar -->
+    <div id="evidenceSidebar">
+        <h3 class="sidebar-title">Segment Evidence Inspector</h3>
+        <p style="font-size: 12px; color: #57606a; margin: 0;">Type in search or select any node/edge to isolate and inspect segment summaries directly from the SQLite database.</p>
+        <hr style="border:0; border-top:1px solid #d0d7de; margin: 4px 0;">
+        <div id="inspectorContent"></div>
+    </div>
+
+</div>
+
+<script>
+    const MASTER_DB_FILE_ID = "13dO8Wu4xh8-fYgrTICOfpQJtu5s0qVf5";
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzyJ8UU3UF5zXOGFM1tEDIkuukkV3hulg2zTyiRryvE6Ml9X9Cxf5p-mnqbwN0ijJg/exec";
+    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSemWY3KZtKhpi91drdaoWp6dnapnQqbWuztti-kjxVDnW9zlya8vvRGxWTaoGUMs6rr5hVMosohi7s/pub?output=csv";
+
+    let sqlEngine = null;
+    let masterDbInstance = null;
+    let network = null;
+
+    let nodesDataSet = new vis.DataSet();
+    let edgesDataSet = new vis.DataSet();
+
+    let allEntitiesList = []; 
+    let allPaperIdsList = [];
+    let sheetMetadataMap = new Map();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialPaperId = urlParams.get('paperId');
+
+    // 1. Fetch SQLite binary via Google Apps Script proxy
+    async function getMasterDb() {
+        if (masterDbInstance) return masterDbInstance;
+        
+        if (!sqlEngine) {
+            sqlEngine = await initSqlJs({ 
+                locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${f}` 
+            });
+        }
+
+        const api = `${APPS_SCRIPT_URL}?id=${MASTER_DB_FILE_ID}`;
+        const res = await fetch(api, { redirect: "follow" });
+        if (!res.ok) throw new Error(`Proxy HTTP Error: ${res.status}`);
+
+        const json = await res.json();
+        if (json.error) throw new Error(`Google Apps Script Error: ${json.error}`);
+        if (!json.data) throw new Error("No database binary data returned.");
+
+        const cleanBase64 = json.data.replace(/\s/g, '');
+        const binaryString = atob(cleanBase64);
+        const binaryData = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            binaryData[i] = binaryString.charCodeAt(i);
+        }
+
+        masterDbInstance = new sqlEngine.Database(binaryData);
+        return masterDbInstance;
+    }
+
+    // Helper to normalize IDs for consistent matching between SQL and CSV
+    function normalizeId(id) {
+        if (!id) return '';
+        return String(id).toLowerCase().replace(/[\s_\-]+/g, ''); 
+    }
+
+    // 2. Fetch Google Sheets CSV Metadata for titles/locations
+    function fetchSheetMetadata() {
+        return new Promise((resolve) => {
+            Papa.parse(SHEET_CSV_URL, {
+                download: true,
+                header: true,
+                skipEmptyLines: true,
+                complete: (results) => {
+                    const metaMap = new Map();
+                    results.data.forEach(row => {
+                        const pid = (row['Paper_ID'] || row['paper_id'] || '').trim();
+                        if (pid) {
+                            // Store using the normalized key
+                            metaMap.set(normalizeId(pid), {
+                                title: row.Title || row.title || 'Untitled Study',
+                                location: row['City, Country'] || row.Location || 'N/A',
+                                year: row.Year || 'N/A'
+                            });
+                        }
+                    });
+                    resolve(metaMap);
+                },
+                error: () => resolve(new Map())
+            });
+        });
+    }
+    // Map to store dynamically generated distinct colors per node type
+    const typeColorMap = new Map();
+    let currentHue = 0.1; // Starting point for hue distribution
+
+    function getNodeColor(type) {
+        const typeKey = (type || 'Concept').trim();
+        
+        if (!typeColorMap.has(typeKey)) {
+            // Use the golden ratio conjugate to evenly space out hues across 360 degrees
+            const goldenRatioConjugate = 0.618033988749895;
+            currentHue = (currentHue + goldenRatioConjugate) % 1;
+            const hue = Math.floor(currentHue * 360);
+            
+            typeColorMap.set(typeKey, {
+                background: `hsl(${hue}, 80%, 90%)`,
+                border: `hsl(${hue}, 70%, 45%)`,
+                highlight: {
+                    background: `hsl(${hue}, 85%, 82%)`,
+                    border: `hsl(${hue}, 80%, 35%)`
+                }
+            });
+        }
+        
+        return typeColorMap.get(typeKey);
+    }
+
+    // 3. Load Database & Join Relationships with Segments
+    async function initInventoryGraph() {
+        try {
+            const [db, sheetMap] = await Promise.all([
+                getMasterDb(),
+                fetchSheetMetadata()
+            ]);
+
+            sheetMetadataMap = sheetMap;
+            document.getElementById("loadingOverlay").style.display = "none";
+
+            // Add SELECT DISTINCT to the query
+            const query = `
+                SELECT DISTINCT
+                    TRIM(r.paper_id) as paper_id, 
+                    e1.name as src_name, 
+                    e1.type as src_type, 
+                    r.relation, 
+                    e2.name as tgt_name, 
+                    e2.type as tgt_type,
+                    r.segment_id,
+                    s.section_type,
+                    s.page,
+                    s.summary as segment_summary
+                FROM relationships r
+                LEFT JOIN entities e1 ON r.source_id = e1.entity_id
+                LEFT JOIN entities e2 ON r.target_id = e2.entity_id
+                LEFT JOIN segments s ON r.segment_id = s.segment_id;
+            `;
+
+            const sqlResult = db.exec(query);
+
+            const nodesMap = new Map();
+            const edgesArray = [];
+            const paperSet = new Set();
+            const seenEdges = new Set(); // Track unique edges to prevent sidebar duplicates
+
+            if (sqlResult.length > 0) {
+                sqlResult[0].values.forEach(([paperId, srcName, srcType, rel, tgtName, tgtType, segmentId, sectionType, pageNum, segSummary], index) => {
+                    if (!srcName || !tgtName) return;
+
+                    const cleanPaperId = (paperId || 'Unknown_Paper').trim();
+                    const srcKey = srcName.trim();
+                    const tgtKey = tgtName.trim();
+                    const cleanSegId = segmentId || 'N/A';
+
+                    // Filter out exact duplicate triples mapped to the same segment
+                    const edgeSignature = `${srcKey}|${rel}|${tgtKey}|${cleanSegId}`;
+                    if (seenEdges.has(edgeSignature)) return; 
+                    seenEdges.add(edgeSignature);
+
+                    // Source Entity Node - dynamically assigns a random color based on type
+                    if (!nodesMap.has(srcKey)) {
+                        nodesMap.set(srcKey, {
+                            id: srcKey,
+                            label: srcKey,
+                            type: srcType || 'Concept',
+                            shape: 'dot',
+                            size: 16,
+                            color: getNodeColor(srcType), 
+                            papers: new Set([cleanPaperId]),
+                            hidden: false
+                        });
+                    } else {
+                        nodesMap.get(srcKey).papers.add(cleanPaperId);
+                    }
+
+                    // Target Entity Node - dynamically assigns a random color based on type
+                    if (!nodesMap.has(tgtKey)) {
+                        nodesMap.set(tgtKey, {
+                            id: tgtKey,
+                            label: tgtKey,
+                            type: tgtType || 'Concept',
+                            shape: 'dot',
+                            size: 16,
+                            color: getNodeColor(tgtType),
+                            papers: new Set([cleanPaperId]),
+                            hidden: false
+                        });
+                    } else {
+                        nodesMap.get(tgtKey).papers.add(cleanPaperId);
+                    }
+
+                    const finalSegmentSummary = segSummary || 'No explicit summary text available for this segment.';
+
+                    edgesArray.push({
+                        id: `edge_${index}`,
+                        from: srcKey,
+                        to: tgtKey,
+                        label: rel || 'connected_to',
+                        arrows: 'to',
+                        font: { size: 10, align: 'middle', color: '#57606a' },
+                        color: { color: '#d0d7de', highlight: '#0969da' },
+                        width: 1.5,
+                        hidden: false,
+                        paperId: cleanPaperId,
+                        segmentId: segmentId || 'N/A',
+                        sectionType: sectionType || 'General',
+                        page: pageNum ? `Page ${pageNum}` : 'N/A',
+                        segmentSummary: finalSegmentSummary,
+                        sourceName: srcKey,
+                        targetName: tgtKey,
+                        relation: rel
+                    });
+                });
+            }
+
+            allEntitiesList = Array.from(nodesMap.values());
+            allPaperIdsList = Array.from(paperSet);
+
+            nodesDataSet.add(allEntitiesList);
+            edgesDataSet.add(edgesArray);
+
+            document.getElementById('nodesCount').innerText = `${nodesDataSet.length} Nodes`;
+            document.getElementById('edgesCount').innerText = `${edgesDataSet.length} Connections`;
+
+            // Initialize Vis-Network Graph
+            const container = document.getElementById('network-container');
+            const data = { nodes: nodesDataSet, edges: edgesDataSet };
+            const options = {
+                nodes: {
+                    font: { size: 12, face: 'Segoe UI', color: '#1f2328' },
+                    borderWidth: 2
+                },
+                edges: { smooth: { type: 'continuous' } },
+                physics: {
+                    barnesHut: { gravitationalConstant: -3000, springLength: 95 },
+                    stabilization: { iterations: 150 }
+                },
+                interaction: { hover: true, tooltipDelay: 150 }
+            };
+
+            network = new vis.Network(container, data, options);
+
+            // Selection Event Listeners
+            network.on("selectNode", params => {
+                if (params.nodes.length > 0) inspectNode(params.nodes[0]);
+            });
+
+            network.on("selectEdge", params => {
+                if (params.edges.length > 0 && params.nodes.length === 0) inspectEdge(params.edges[0]);
+            });
+
+            // Close dropdown on outside click
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.search-input-wrapper')) {
+                    document.getElementById('suggestionsDropdown').style.display = 'none';
+                }
+            });
+
+            if (initialPaperId) {
+                isolateByPaper(initialPaperId);
+                document.getElementById('searchInput').value = initialPaperId;
+            }
+
+        } catch (err) {
+            console.error("Inventory Graph Error:", err);
+            document.getElementById("loadingOverlay").innerHTML = `<span style="color:#cf222e;">Failed to load network.<br>${err.message}</span>`;
+        }
+    }
+
+    // 4. Autocomplete Input Handling
+    function handleSearchInput() {
+        const query = document.getElementById('searchInput').value.trim().toLowerCase();
+        const dropdown = document.getElementById('suggestionsDropdown');
+        const clearBtn = document.getElementById('clearBtn');
+
+        clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+
+        if (!query) {
+            dropdown.style.display = 'none';
+            resetIsolation();
+            return;
+        }
+
+        const matchedEntities = allEntitiesList.filter(e => e.label.toLowerCase().includes(query)).slice(0, 8);
+        const matchedPapers = allPaperIdsList.filter(p => p.toLowerCase().includes(query)).slice(0, 5);
+
+        if (matchedEntities.length === 0 && matchedPapers.length === 0) {
+            dropdown.innerHTML = `<div class="suggestion-item" style="color:#6e7781;">No matching entities or papers found</div>`;
+            dropdown.style.display = 'block';
+            return;
+        }
+
+        let html = '';
+        matchedEntities.forEach(e => {
+            html += `
+                <div class="suggestion-item" onclick="selectSuggestion('entity', '${escapeJsStr(e.id)}')">
+                    <span><b>${escapeHtml(e.label)}</b></span>
+                    <span class="suggestion-tag tag-entity">${escapeHtml(e.type)}</span>
+                </div>
+            `;
+        });
+
+        matchedPapers.forEach(p => {
+            html += `
+                <div class="suggestion-item" onclick="selectSuggestion('paper', '${escapeJsStr(p)}')">
+                    <span>📄 Paper ID: <b>${escapeHtml(p)}</b></span>
+                    <span class="suggestion-tag tag-paper">Paper</span>
+                </div>
+            `;
+        });
+
+        dropdown.innerHTML = html;
+        dropdown.style.display = 'block';
+    }
+
+    function selectSuggestion(type, id) {
+        document.getElementById('suggestionsDropdown').style.display = 'none';
+        document.getElementById('searchInput').value = id;
+
+        if (type === 'entity') {
+            isolateByEntity(id);
+        } else if (type === 'paper') {
+            isolateByPaper(id);
+        }
+    }
+
+    // 5. Isolate Entity and Hide All Unrelated Nodes
+    function isolateByEntity(entityId) {
+        const connectedEdges = edgesDataSet.get({
+            filter: e => e.from === entityId || e.to === entityId
+        });
+
+        const visibleNodeIds = new Set([entityId]);
+        const visibleEdgeIds = new Set();
+
+        connectedEdges.forEach(e => {
+            visibleEdgeIds.add(e.id);
+            visibleNodeIds.add(e.from);
+            visibleNodeIds.add(e.to);
+        });
+
+        nodesDataSet.forEach(node => {
+            nodesDataSet.update({ id: node.id, hidden: !visibleNodeIds.has(node.id) });
+        });
+
+        edgesDataSet.forEach(edge => {
+            edgesDataSet.update({ id: edge.id, hidden: !visibleEdgeIds.has(edge.id) });
+        });
+
+        document.getElementById('resetViewBtn').style.display = 'inline-block';
+        network.fit({ animation: { duration: 800 } });
+        inspectNode(entityId);
+    }
+
+    // 6. Isolate Paper and Hide All Unrelated Nodes
+    function isolateByPaper(paperId) {
+        const paperEdges = edgesDataSet.get({
+            filter: e => e.paperId.toLowerCase() === paperId.toLowerCase()
+        });
+
+        const visibleNodeIds = new Set();
+        const visibleEdgeIds = new Set();
+
+        paperEdges.forEach(e => {
+            visibleEdgeIds.add(e.id);
+            visibleNodeIds.add(e.from);
+            visibleNodeIds.add(e.to);
+        });
+
+        nodesDataSet.forEach(node => {
+            nodesDataSet.update({ id: node.id, hidden: !visibleNodeIds.has(node.id) });
+        });
+
+        edgesDataSet.forEach(edge => {
+            edgesDataSet.update({ id: edge.id, hidden: !visibleEdgeIds.has(edge.id) });
+        });
+
+        document.getElementById('resetViewBtn').style.display = 'inline-block';
+        network.fit({ animation: { duration: 800 } });
+        inspectPaper(paperId, paperEdges);
+    }
+
+    // 7. Reset View & Unhide All Nodes
+    function resetIsolation() {
+        document.getElementById('searchInput').value = '';
+        document.getElementById('clearBtn').style.display = 'none';
+        document.getElementById('resetViewBtn').style.display = 'none';
+        document.getElementById('suggestionsDropdown').style.display = 'none';
+
+        nodesDataSet.forEach(node => {
+            if (node.hidden) nodesDataSet.update({ id: node.id, hidden: false });
+        });
+
+        edgesDataSet.forEach(edge => {
+            if (edge.hidden) edgesDataSet.update({ id: edge.id, hidden: false });
+        });
+
+        network.fit({ animation: { duration: 800 } });
+        document.getElementById('inspectorContent').innerHTML = `
+            <div style="text-align:center; padding: 30px; color:#57606a;">
+                All nodes and connections visible.<br>Select any element to inspect segment summaries.
+            </div>
+        `;
+    }
+
+    // 8. Sidebar Segment Evidence Inspectors
+    function inspectNode(nodeId) {
+        const node = nodesDataSet.get(nodeId);
+        if (!node) return;
+
+        const connectedEdges = edgesDataSet.get({
+            filter: e => e.from === nodeId || e.to === nodeId
+        });
+
+        const inspector = document.getElementById('inspectorContent');
+        inspector.innerHTML = `
+            <div class="sidebar-section">
+                <h4>Isolated Entity</h4>
+                <div style="font-weight: 600; font-size: 14px; color: #0969da;">${escapeHtml(node.label)}</div>
+                <div style="margin-top: 4px;"><span class="badge-tag">Type: ${escapeHtml(node.type)}</span></div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Segment Evidence (${connectedEdges.length} Relations)</h4>
+                ${connectedEdges.map(e => `
+                    <div style="border-bottom: 1px solid #d0d7de; padding-bottom: 10px; margin-bottom: 10px;">
+                        <div>
+                            <span class="badge-tag">${escapeHtml(e.from)}</span> 
+                            <span class="relation-badge">${escapeHtml(e.relation)}</span> 
+                            <span class="badge-tag">${escapeHtml(e.to)}</span>
+                        </div>
+                        <div style="font-size:11px; color:#57606a; margin-top:6px;">
+                            <b>Paper:</b> <span style="color:#0969da; cursor:pointer; text-decoration:underline;" onclick="isolateByPaper('${escapeJsStr(e.paperId)}')">${escapeHtml(e.paperId)}</span>
+                        </div>
+                        <div style="margin-top:4px;">
+                            <span class="meta-tag">Section: ${escapeHtml(e.sectionType)}</span>
+                            <span class="meta-tag">${escapeHtml(e.page)}</span>
+                            <span class="meta-tag">Seg ID: ${escapeHtml(e.segmentId)}</span>
+                        </div>
+                        <div class="evidence-quote">
+                            <b>Segment Summary:</b><br>${escapeHtml(e.segmentSummary)}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function inspectEdge(edgeId) {
+        const edge = edgesDataSet.get(edgeId);
+        if (!edge) return;
+
+        const paperMeta = sheetMetadataMap.get(normalizeId(edge.paperId)) || {};
+
+        const inspector = document.getElementById('inspectorContent');
+        inspector.innerHTML = `
+            <div class="sidebar-section">
+                <h4>Isolated Relation</h4>
+                <div>
+                    <span class="badge-tag">${escapeHtml(edge.sourceName)}</span> 
+                    <span class="relation-badge">${escapeHtml(edge.relation)}</span> 
+                    <span class="badge-tag">${escapeHtml(edge.targetName)}</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Paper Info</h4>
+                <div><b>Paper ID:</b> ${escapeHtml(edge.paperId)}</div>
+                <div><b>Title:</b> ${escapeHtml(paperMeta.title || edge.paperId)}</div>
+                <div style="margin-top:8px;">
+                    <button onclick="isolateByPaper('${escapeJsStr(edge.paperId)}')" class="nav-btn" style="cursor:pointer; font-size:11px; border:none;">Isolate Paper Subgraph →</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Segment Details</h4>
+                <div>
+                    <span class="meta-tag">Section: ${escapeHtml(edge.sectionType)}</span>
+                    <span class="meta-tag">${escapeHtml(edge.page)}</span>
+                    <span class="meta-tag">Seg ID: ${escapeHtml(edge.segmentId)}</span>
+                </div>
+                <div class="evidence-quote">
+                    <b>Segment Summary:</b><br>${escapeHtml(edge.segmentSummary)}
+                </div>
+            </div>
+        `;
+    }
+
+    function inspectPaper(paperId, edges) {
+        const paperMeta = sheetMetadataMap.get(paperId.toLowerCase()) || {};
+
+        const inspector = document.getElementById('inspectorContent');
+        inspector.innerHTML = `
+            <div class="sidebar-section">
+                <h4>Isolated Paper Subgraph</h4>
+                <div style="font-weight: 600; font-size: 14px; color: #0969da;">${escapeHtml(paperMeta.title || paperId)}</div>
+                <div style="font-size:11px; color:#57606a; margin-top:4px;"><b>Paper ID:</b> ${escapeHtml(paperId)}</div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4>Retrieved Segment Summaries (${edges.length} Triples)</h4>
+                ${edges.map(e => `
+                    <div style="border-bottom: 1px solid #d0d7de; padding-bottom: 10px; margin-bottom: 10px;">
+                        <div>
+                            <span class="badge-tag">${escapeHtml(e.from)}</span> 
+                            <span class="relation-badge">${escapeHtml(e.relation)}</span> 
+                            <span class="badge-tag">${escapeHtml(e.to)}</span>
+                        </div>
+                        <div style="margin-top:4px;">
+                            <span class="meta-tag">Section: ${escapeHtml(e.sectionType)}</span>
+                            <span class="meta-tag">${escapeHtml(e.page)}</span>
+                        </div>
+                        <div class="evidence-quote">
+                            <b>Segment Summary:</b><br>${escapeHtml(e.segmentSummary)}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function escapeJsStr(text) {
+        if (!text) return '';
+        return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    initInventoryGraph();
+</script>
+
+</body>
+</html>
