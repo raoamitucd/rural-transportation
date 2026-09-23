@@ -269,6 +269,21 @@
             font-weight: 600;
             color: #0969da;
         }
+        #graphHint {
+            position: absolute;
+            top: 50%; left: calc((100% - 420px) / 2);
+            transform: translate(-50%, -50%);
+            z-index: 5;
+            max-width: 340px;
+            padding: 22px 28px;
+            background: #fff;
+            border: 1px solid #d0d7de;
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+            text-align: center;
+            color: #57606a;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -299,7 +314,8 @@
         <div class="stats-badge">
             <span id="nodesCount">0 Nodes</span>
             <span id="edgesCount">0 Connections</span>
-            <button id="resetViewBtn" class="reset-btn" onclick="resetIsolation()" style="display:none;">Show All</button>
+            <button id="resetViewBtn" class="reset-btn" onclick="resetIsolation()" style="display:none;">Clear Focus</button>
+            <button id="showAllBtn" class="reset-btn" onclick="showEntireGraph()">Show Entire Graph</button>
         </div>
     </div>
 
@@ -307,6 +323,7 @@
 
     <!-- Vis Network Canvas Container -->
     <div id="network-container"></div>
+    <div id="graphHint"><b>Explore the knowledge graph</b><br>Search for a paper or entity above to view its connections.</div>
 
     <!-- Segment Evidence Inspector Sidebar -->
     <div id="evidenceSidebar">
@@ -481,7 +498,7 @@
                             size: 16,
                             color: getNodeColor(srcType), 
                             papers: new Set([cleanPaperId]),
-                            hidden: false
+                            hidden: true
                         });
                     } else {
                         nodesMap.get(srcKey).papers.add(cleanPaperId);
@@ -497,7 +514,7 @@
                             size: 16,
                             color: getNodeColor(tgtType),
                             papers: new Set([cleanPaperId]),
-                            hidden: false
+                            hidden: true
                         });
                     } else {
                         nodesMap.get(tgtKey).papers.add(cleanPaperId);
@@ -518,7 +535,7 @@
                             font: { size: 10, align: 'middle', color: '#57606a' },
                             color: { color: '#d0d7de', highlight: '#0969da' },
                             width: 1.5,
-                            hidden: false,
+                            hidden: true,
                             paperId: cleanPaperId,
                             sourceName: srcKey,
                             targetName: tgtKey,
@@ -546,8 +563,8 @@
             nodesDataSet.add(allEntitiesList);
             edgesDataSet.add(Array.from(edgesByTriple.values()));
 
-            document.getElementById('nodesCount').innerText = `${nodesDataSet.length} Nodes`;
-            document.getElementById('edgesCount').innerText = `${edgesDataSet.length} Connections`;
+            document.getElementById('nodesCount').innerText = `${nodesDataSet.length} Total Nodes`;
+            document.getElementById('edgesCount').innerText = `${edgesDataSet.length} Total Connections`;
 
             // Initialize Vis-Network Graph
             const container = document.getElementById('network-container');
@@ -558,17 +575,11 @@
                     borderWidth: 2
                 },
                 edges: { smooth: false },
-                physics: {
-                    barnesHut: { gravitationalConstant: -3000, springLength: 95 },
-                    stabilization: { iterations: 50 }
-                },
+                physics: false,
                 interaction: { hover: true, tooltipDelay: 150 }
             };
 
             network = new vis.Network(container, data, options);
-            network.once('stabilizationIterationsDone', () => {
-                network.setOptions({ physics: false });
-            });
 
             // Selection Event Listeners
             network.on("selectNode", params => {
@@ -670,9 +681,9 @@
         });
 
         updateVisibility(visibleNodeIds, visibleEdgeIds);
-
+        document.getElementById('graphHint').style.display = 'none';
         document.getElementById('resetViewBtn').style.display = 'inline-block';
-        network.fit({ animation: { duration: 800 } });
+        layoutVisibleGraph();
         inspectNode(entityId);
     }
 
@@ -692,13 +703,27 @@
         });
 
         updateVisibility(visibleNodeIds, visibleEdgeIds);
-
+        document.getElementById('graphHint').style.display = 'none';
         document.getElementById('resetViewBtn').style.display = 'inline-block';
-        network.fit({ animation: { duration: 800 } });
+        layoutVisibleGraph();
         inspectPaper(paperId, paperEdges);
     }
 
-    // 7. Reset View & Unhide All Nodes
+    // 7. Navigate between focused and full graph views
+    function layoutVisibleGraph() {
+        network.once('stabilizationIterationsDone', () => {
+            network.setOptions({ physics: false });
+            network.fit({ animation: { duration: 400 } });
+        });
+        network.setOptions({
+            physics: {
+                enabled: true,
+                barnesHut: { gravitationalConstant: -3000, springLength: 95 },
+                stabilization: { iterations: 50 }
+            }
+        });
+    }
+
     function updateVisibility(visibleNodeIds, visibleEdgeIds) {
         const changedNodes = nodesDataSet.get()
             .filter(node => Boolean(node.hidden) !== !visibleNodeIds.has(node.id))
@@ -715,18 +740,27 @@
         document.getElementById('clearBtn').style.display = 'none';
         document.getElementById('resetViewBtn').style.display = 'none';
         document.getElementById('suggestionsDropdown').style.display = 'none';
-
-        const hiddenNodes = nodesDataSet.get({ filter: node => node.hidden })
-            .map(node => ({ id: node.id, hidden: false }));
-        const hiddenEdges = edgesDataSet.get({ filter: edge => edge.hidden })
-            .map(edge => ({ id: edge.id, hidden: false }));
-        if (hiddenNodes.length) nodesDataSet.update(hiddenNodes);
-        if (hiddenEdges.length) edgesDataSet.update(hiddenEdges);
-
-        network.fit({ animation: { duration: 800 } });
+        network.setOptions({ physics: false });
+        updateVisibility(new Set(), new Set());
+        document.getElementById('graphHint').style.display = 'block';
         document.getElementById('inspectorContent').innerHTML = `
             <div style="text-align:center; padding: 30px; color:#57606a;">
-                All nodes and connections visible.<br>Select any element to inspect segment summaries.
+                Search for an entity or paper to explore its connections.
+            </div>
+        `;
+    }
+
+    function showEntireGraph() {
+        document.getElementById('graphHint').style.display = 'none';
+        document.getElementById('resetViewBtn').style.display = 'inline-block';
+        updateVisibility(
+            new Set(nodesDataSet.getIds()),
+            new Set(edgesDataSet.getIds())
+        );
+        layoutVisibleGraph();
+        document.getElementById('inspectorContent').innerHTML = `
+            <div style="text-align:center; padding: 30px; color:#57606a;">
+                Full graph view. Search for a paper or entity to focus it.
             </div>
         `;
     }
@@ -782,6 +816,7 @@
                 <h4>Isolated Entity</h4>
                 <div style="font-weight: 600; font-size: 14px; color: #0969da;">${escapeHtml(node.label)}</div>
                 <div style="margin-top: 4px;"><span class="badge-tag">Type: ${escapeHtml(node.type)}</span></div>
+                <button onclick="isolateByEntity('${escapeJsStr(node.id)}')" class="reset-btn" style="margin-top:10px;">Focus this entity</button>
             </div>
 
             <div class="sidebar-section">
