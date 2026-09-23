@@ -457,23 +457,19 @@
             const sqlResult = db.exec(query);
 
             const nodesMap = new Map();
-            const edgesArray = [];
+            const edgesByTriple = new Map();
+            const seenEvidenceByTriple = new Map();
             const paperSet = new Set();
-            const seenEdges = new Set(); // Track unique edges to prevent sidebar duplicates
 
             if (sqlResult.length > 0) {
                 sqlResult[0].values.forEach(([paperId, srcName, srcType, rel, tgtName, tgtType, segmentId, sectionType, pageNum, segSummary], index) => {
                     if (!srcName || !tgtName) return;
 
                     const cleanPaperId = (paperId || 'Unknown_Paper').trim();
+                    paperSet.add(cleanPaperId);
                     const srcKey = srcName.trim();
                     const tgtKey = tgtName.trim();
                     const cleanSegId = segmentId || 'N/A';
-
-                    // Filter out exact duplicate triples mapped to the same segment
-                    const edgeSignature = `${srcKey}|${rel}|${tgtKey}|${cleanSegId}`;
-                    if (seenEdges.has(edgeSignature)) return; 
-                    seenEdges.add(edgeSignature);
 
                     // Source Entity Node - dynamically assigns a random color based on type
                     if (!nodesMap.has(srcKey)) {
@@ -508,26 +504,39 @@
                     }
 
                     const finalSegmentSummary = segSummary || 'No explicit summary text available for this segment.';
-
-                    edgesArray.push({
-                        id: `edge_${index}`,
-                        from: srcKey,
-                        to: tgtKey,
-                        label: rel || 'connected_to',
-                        arrows: 'to',
-                        font: { size: 10, align: 'middle', color: '#57606a' },
-                        color: { color: '#d0d7de', highlight: '#0969da' },
-                        width: 1.5,
-                        hidden: false,
-                        paperId: cleanPaperId,
-                        segmentId: segmentId || 'N/A',
-                        sectionType: sectionType || 'General',
-                        page: pageNum ? `Page ${pageNum}` : 'N/A',
-                        segmentSummary: finalSegmentSummary,
-                        sourceName: srcKey,
-                        targetName: tgtKey,
-                        relation: rel
-                    });
+                    // Keep each paper's relationship as one visible edge, while retaining
+                    // every distinct segment as evidence in the inspector.
+                    const tripleKey = JSON.stringify([cleanPaperId, srcKey, rel || 'connected_to', tgtKey]);
+                    let edge = edgesByTriple.get(tripleKey);
+                    if (!edge) {
+                        edge = {
+                            id: `edge_${index}`,
+                            from: srcKey,
+                            to: tgtKey,
+                            label: rel || 'connected_to',
+                            arrows: 'to',
+                            font: { size: 10, align: 'middle', color: '#57606a' },
+                            color: { color: '#d0d7de', highlight: '#0969da' },
+                            width: 1.5,
+                            hidden: false,
+                            paperId: cleanPaperId,
+                            sourceName: srcKey,
+                            targetName: tgtKey,
+                            relation: rel,
+                            evidences: []
+                        };
+                        edgesByTriple.set(tripleKey, edge);
+                        seenEvidenceByTriple.set(tripleKey, new Set());
+                    }
+                    if (!seenEvidenceByTriple.get(tripleKey).has(cleanSegId)) {
+                        seenEvidenceByTriple.get(tripleKey).add(cleanSegId);
+                        edge.evidences.push({
+                            segmentId: cleanSegId,
+                            sectionType: sectionType || 'General',
+                            page: pageNum ? `Page ${pageNum}` : 'N/A',
+                            segmentSummary: finalSegmentSummary
+                        });
+                    }
                 });
             }
 
@@ -535,7 +544,7 @@
             allPaperIdsList = Array.from(paperSet);
 
             nodesDataSet.add(allEntitiesList);
-            edgesDataSet.add(edgesArray);
+            edgesDataSet.add(Array.from(edgesByTriple.values()));
 
             document.getElementById('nodesCount').innerText = `${nodesDataSet.length} Nodes`;
             document.getElementById('edgesCount').innerText = `${edgesDataSet.length} Connections`;
@@ -548,15 +557,18 @@
                     font: { size: 12, face: 'Segoe UI', color: '#1f2328' },
                     borderWidth: 2
                 },
-                edges: { smooth: { type: 'continuous' } },
+                edges: { smooth: false },
                 physics: {
                     barnesHut: { gravitationalConstant: -3000, springLength: 95 },
-                    stabilization: { iterations: 150 }
+                    stabilization: { iterations: 50 }
                 },
                 interaction: { hover: true, tooltipDelay: 150 }
             };
 
             network = new vis.Network(container, data, options);
+            network.once('stabilizationIterationsDone', () => {
+                network.setOptions({ physics: false });
+            });
 
             // Selection Event Listeners
             network.on("selectNode", params => {
@@ -657,13 +669,7 @@
             visibleNodeIds.add(e.to);
         });
 
-        nodesDataSet.forEach(node => {
-            nodesDataSet.update({ id: node.id, hidden: !visibleNodeIds.has(node.id) });
-        });
-
-        edgesDataSet.forEach(edge => {
-            edgesDataSet.update({ id: edge.id, hidden: !visibleEdgeIds.has(edge.id) });
-        });
+        updateVisibility(visibleNodeIds, visibleEdgeIds);
 
         document.getElementById('resetViewBtn').style.display = 'inline-block';
         network.fit({ animation: { duration: 800 } });
@@ -685,13 +691,7 @@
             visibleNodeIds.add(e.to);
         });
 
-        nodesDataSet.forEach(node => {
-            nodesDataSet.update({ id: node.id, hidden: !visibleNodeIds.has(node.id) });
-        });
-
-        edgesDataSet.forEach(edge => {
-            edgesDataSet.update({ id: edge.id, hidden: !visibleEdgeIds.has(edge.id) });
-        });
+        updateVisibility(visibleNodeIds, visibleEdgeIds);
 
         document.getElementById('resetViewBtn').style.display = 'inline-block';
         network.fit({ animation: { duration: 800 } });
@@ -699,19 +699,29 @@
     }
 
     // 7. Reset View & Unhide All Nodes
+    function updateVisibility(visibleNodeIds, visibleEdgeIds) {
+        const changedNodes = nodesDataSet.get()
+            .filter(node => Boolean(node.hidden) !== !visibleNodeIds.has(node.id))
+            .map(node => ({ id: node.id, hidden: !visibleNodeIds.has(node.id) }));
+        const changedEdges = edgesDataSet.get()
+            .filter(edge => Boolean(edge.hidden) !== !visibleEdgeIds.has(edge.id))
+            .map(edge => ({ id: edge.id, hidden: !visibleEdgeIds.has(edge.id) }));
+        if (changedNodes.length) nodesDataSet.update(changedNodes);
+        if (changedEdges.length) edgesDataSet.update(changedEdges);
+    }
+
     function resetIsolation() {
         document.getElementById('searchInput').value = '';
         document.getElementById('clearBtn').style.display = 'none';
         document.getElementById('resetViewBtn').style.display = 'none';
         document.getElementById('suggestionsDropdown').style.display = 'none';
 
-        nodesDataSet.forEach(node => {
-            if (node.hidden) nodesDataSet.update({ id: node.id, hidden: false });
-        });
-
-        edgesDataSet.forEach(edge => {
-            if (edge.hidden) edgesDataSet.update({ id: edge.id, hidden: false });
-        });
+        const hiddenNodes = nodesDataSet.get({ filter: node => node.hidden })
+            .map(node => ({ id: node.id, hidden: false }));
+        const hiddenEdges = edgesDataSet.get({ filter: edge => edge.hidden })
+            .map(edge => ({ id: edge.id, hidden: false }));
+        if (hiddenNodes.length) nodesDataSet.update(hiddenNodes);
+        if (hiddenEdges.length) edgesDataSet.update(hiddenEdges);
 
         network.fit({ animation: { duration: 800 } });
         document.getElementById('inspectorContent').innerHTML = `
@@ -722,12 +732,48 @@
     }
 
     // 8. Sidebar Segment Evidence Inspectors
+    function renderEvidenceList(edge) {
+        return edge.evidences.map(item => `
+            <div style="margin-top:8px;">
+                <span class="meta-tag">Section: ${escapeHtml(item.sectionType)}</span>
+                <span class="meta-tag">${escapeHtml(item.page)}</span>
+                <span class="meta-tag">Seg ID: ${escapeHtml(item.segmentId)}</span>
+                <div class="evidence-quote">
+                    <b>Segment Summary:</b><br>${escapeHtml(item.segmentSummary)}
+                </div>
+            </div>
+        `).join('');
+    }
+
     function inspectNode(nodeId) {
         const node = nodesDataSet.get(nodeId);
         if (!node) return;
 
         const connectedEdges = edgesDataSet.get({
             filter: e => e.from === nodeId || e.to === nodeId
+        });
+
+        // One segment can support several relations for this entity. Show its
+        // summary once and list all of those relations beneath the same segment.
+        const segments = new Map();
+        connectedEdges.forEach(edge => {
+            edge.evidences.forEach(evidence => {
+                const key = JSON.stringify([
+                    edge.paperId,
+                    evidence.segmentId === 'N/A' ? edge.id : evidence.segmentId
+                ]);
+                if (!segments.has(key)) {
+                    segments.set(key, {
+                        paperId: edge.paperId,
+                        evidence,
+                        relations: []
+                    });
+                }
+                const segment = segments.get(key);
+                if (!segment.relations.some(relation => relation.id === edge.id)) {
+                    segment.relations.push(edge);
+                }
+            });
         });
 
         const inspector = document.getElementById('inspectorContent');
@@ -739,24 +785,26 @@
             </div>
 
             <div class="sidebar-section">
-                <h4>Segment Evidence (${connectedEdges.length} Relations)</h4>
-                ${connectedEdges.map(e => `
+                <h4>Segment Evidence (${segments.size} Segments, ${connectedEdges.length} Relations)</h4>
+                ${Array.from(segments.values()).map(segment => `
                     <div style="border-bottom: 1px solid #d0d7de; padding-bottom: 10px; margin-bottom: 10px;">
-                        <div>
-                            <span class="badge-tag">${escapeHtml(e.from)}</span> 
-                            <span class="relation-badge">${escapeHtml(e.relation)}</span> 
-                            <span class="badge-tag">${escapeHtml(e.to)}</span>
-                        </div>
                         <div style="font-size:11px; color:#57606a; margin-top:6px;">
-                            <b>Paper:</b> <span style="color:#0969da; cursor:pointer; text-decoration:underline;" onclick="isolateByPaper('${escapeJsStr(e.paperId)}')">${escapeHtml(e.paperId)}</span>
+                            <b>Paper:</b> <span style="color:#0969da; cursor:pointer; text-decoration:underline;" onclick="isolateByPaper('${escapeJsStr(segment.paperId)}')">${escapeHtml(segment.paperId)}</span>
                         </div>
-                        <div style="margin-top:4px;">
-                            <span class="meta-tag">Section: ${escapeHtml(e.sectionType)}</span>
-                            <span class="meta-tag">${escapeHtml(e.page)}</span>
-                            <span class="meta-tag">Seg ID: ${escapeHtml(e.segmentId)}</span>
+                        <div style="margin-top:6px;">
+                            <span class="meta-tag">Section: ${escapeHtml(segment.evidence.sectionType)}</span>
+                            <span class="meta-tag">${escapeHtml(segment.evidence.page)}</span>
+                            <span class="meta-tag">Seg ID: ${escapeHtml(segment.evidence.segmentId)}</span>
                         </div>
+                        ${segment.relations.map(e => `
+                            <div style="margin-top:8px;">
+                                <span class="badge-tag">${escapeHtml(e.from)}</span>
+                                <span class="relation-badge">${escapeHtml(e.relation)}</span>
+                                <span class="badge-tag">${escapeHtml(e.to)}</span>
+                            </div>
+                        `).join('')}
                         <div class="evidence-quote">
-                            <b>Segment Summary:</b><br>${escapeHtml(e.segmentSummary)}
+                            <b>Segment Summary:</b><br>${escapeHtml(segment.evidence.segmentSummary)}
                         </div>
                     </div>
                 `).join('')}
@@ -792,14 +840,7 @@
 
             <div class="sidebar-section">
                 <h4>Segment Details</h4>
-                <div>
-                    <span class="meta-tag">Section: ${escapeHtml(edge.sectionType)}</span>
-                    <span class="meta-tag">${escapeHtml(edge.page)}</span>
-                    <span class="meta-tag">Seg ID: ${escapeHtml(edge.segmentId)}</span>
-                </div>
-                <div class="evidence-quote">
-                    <b>Segment Summary:</b><br>${escapeHtml(edge.segmentSummary)}
-                </div>
+                ${renderEvidenceList(edge)}
             </div>
         `;
     }
@@ -824,13 +865,7 @@
                             <span class="relation-badge">${escapeHtml(e.relation)}</span> 
                             <span class="badge-tag">${escapeHtml(e.to)}</span>
                         </div>
-                        <div style="margin-top:4px;">
-                            <span class="meta-tag">Section: ${escapeHtml(e.sectionType)}</span>
-                            <span class="meta-tag">${escapeHtml(e.page)}</span>
-                        </div>
-                        <div class="evidence-quote">
-                            <b>Segment Summary:</b><br>${escapeHtml(e.segmentSummary)}
-                        </div>
+                        ${renderEvidenceList(e)}
                     </div>
                 `).join('')}
             </div>
