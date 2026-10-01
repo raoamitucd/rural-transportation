@@ -122,26 +122,85 @@
     function plotMarkers(data) {
         markerLayerGroup.clearLayers();
 
-        data.forEach(p => {
-            if (p.Lat && p.Long) {
-                const lat = parseFloat(p.Lat);
-                const lng = parseFloat(p.Long);
-                const paperId = (p['Paper_ID'] || p['paper_id'] || '').trim();
+        const locations = new Map();
 
-                if (!isNaN(lat) && !isNaN(lng)) {
-                    const marker = L.marker([lat, lng])
-                        .bindPopup(`
-                            <div style="font-family: sans-serif; font-size:12px; line-height:1.5;">
-                                <b style="font-size:13px;">${p.Title || 'Untitled'}</b><br>
-                                <span style="color:#666;">${p['City, Country'] || 'N/A'} (${p['Year'] || 'N/A'})</span><br><br>
-                                <a href="inventory.html?paperId=${encodeURIComponent(paperId)}" style="color:#0969da; font-weight:600;">View in Inventory →</a>
-                            </div>
-                        `);
-                    
-                    markerLayerGroup.addLayer(marker);
-                }
+        data.forEach(p => {
+            if (
+                p.Lat == null || p.Long == null ||
+                String(p.Lat).trim() === '' ||
+                String(p.Long).trim() === ''
+            ) return;
+
+            const lat = Number(p.Lat);
+            const lng = Number(p.Long);
+
+            if (
+                !Number.isFinite(lat) || !Number.isFinite(lng) ||
+                Math.abs(lat) > 90 || Math.abs(lng) > 180
+            ) return;
+
+            const key = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+
+            if (!locations.has(key)) {
+                locations.set(key, { lat, lng, papers: [] });
             }
+
+            locations.get(key).papers.push(p);
         });
+
+        locations.forEach(({ lat, lng, papers }) => {
+            const city = papers[0]['City, Country'] || 'Unknown location';
+
+            const paperList = papers.map(p => {
+                const paperId = String(
+                    p['Paper_ID'] || p['paper_id'] || ''
+                ).trim();
+
+                return `
+                    <div style="padding:10px 0; border-top:1px solid #ddd;">
+                        <b>${escapeHtml(p.Title || 'Untitled')}</b><br>
+                        <span style="color:#666;">
+                            ${escapeHtml(p['City, Country'] || 'N/A')}
+                            (${escapeHtml(p.Year || 'N/A')})
+                        </span><br>
+                        ${paperId ? `
+                            <a href="inventory.html?paperId=${encodeURIComponent(paperId)}"
+                            style="color:#0969da; font-weight:600;">
+                                View in Inventory →
+                            </a>
+                        ` : 'Paper ID unavailable'}
+                    </div>
+                `;
+            }).join('');
+
+            const popup = `
+                <div style="font-family:sans-serif; font-size:12px; line-height:1.5;">
+                    <b style="font-size:14px;">${escapeHtml(city)}</b><br>
+                    ${papers.length} paper${papers.length === 1 ? '' : 's'}
+                    <div style="max-height:300px; overflow-y:auto; margin-top:10px;">
+                        ${paperList}
+                    </div>
+                </div>
+            `;
+
+            const marker = L.marker([lat, lng])
+                .bindTooltip(
+                    `${escapeHtml(city)}: ${papers.length} paper${papers.length === 1 ? '' : 's'}`
+                )
+                .bindPopup(popup, { minWidth: 260, maxWidth: 380 });
+
+            markerLayerGroup.addLayer(marker);
+        });
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, character => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        }[character]));
     }
 </script>
 
